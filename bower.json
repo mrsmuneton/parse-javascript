@@ -1,0 +1,19 @@
+{
+  "name": "parse",
+  "version": "1.2.12",
+  "homepage": "http://www.parse.com",
+  "description": "The Parse JavaScript SDK",
+  "main": "parse-1.2.12.min.js",
+  "keywords": [
+    "cloud",
+    "mobile",
+    "api"
+  ],
+  "ignore": [
+    "**/.*",
+    "node_modules",
+    "bower_components",
+    "test",
+    "tests"
+  ]
+}
