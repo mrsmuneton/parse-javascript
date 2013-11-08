@@ -12,6 +12,7 @@
     "url": "https://www.parse.com/questions/",
     "email": "feedback@parse.com"
   },
+  "license": "MIT",
   "files": [
     "parse-1.2.12.min.js"
   ],
