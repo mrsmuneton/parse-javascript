@@ -1,6 +1,6 @@
 {
   "name": "parse",
-  "version": "1.2.12",
+  "version": "1.2.15",
   "description": "The Parse JavaScript SDK",
   "keywords": [
     "cloud",
@@ -14,9 +14,9 @@
   },
   "license": "MIT",
   "files": [
-    "parse-1.2.12.min.js"
+    "parse.min.js"
   ],
-  "main": "parse-1.2.12.min.js",
+  "main": "parse.min.js",
   "repository": {
       "type": "git",
       "url": "https://github.com/ferlatte/parse-javascript.git"

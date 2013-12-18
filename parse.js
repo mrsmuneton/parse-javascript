@@ -1,7 +1,7 @@
 /*!
  * Parse JavaScript SDK
- * Version: 1.2.12
- * Built: Wed Sep 11 2013 11:52:54
+ * Version: 1.2.15
+ * Built: Mon Dec 16 2013 14:42:11
  * http://parse.com
  *
  * Copyright 2013 Parse, Inc.
@@ -13,7 +13,7 @@
  */
 (function(root) {
   root.Parse = root.Parse || {};
-  root.Parse.VERSION = "js1.2.12";
+  root.Parse.VERSION = "js1.2.15";
 }(this));
 //     Underscore.js 1.4.4
 //     http://underscorejs.org
@@ -1476,12 +1476,31 @@
       }
     };
     xdr.onerror = xdr.ontimeout = function() {
-      promise.reject(xdr);
+      // Let's fake a real error message.
+      var fakeResponse = {
+        responseText: JSON.stringify({
+          code: Parse.Error.X_DOMAIN_REQUEST,
+          error: "IE's XDomainRequest does not supply error info."
+        })
+      };
+      promise.reject(fakeResponse);
     };
     xdr.onprogress = function() {};
     xdr.open(method, url);
     xdr.send(data);
     return promise;
+  };
+
+  Parse._useXDomainRequest = function() {
+    if (typeof(XDomainRequest) !== "undefined") {
+      // We're in IE 8+.
+      if ('withCredentials' in new XMLHttpRequest()) {
+        // We're in IE 10+.
+        return false;
+      }
+      return true;
+    }
+    return false;
   };
 
   
@@ -1491,7 +1510,7 @@
       error: error
     };
 
-    if (typeof(XDomainRequest) !== "undefined") {
+    if (Parse._useXDomainRequest()) {
       return Parse._ajaxIE8(method, url, data)._thenRunCallbacks(options);
     }
 
@@ -1555,6 +1574,7 @@
     var objectId = options.objectId;
     var method = options.method;
     var useMasterKey = options.useMasterKey;
+    var sessionToken = options.sessionToken;
     var dataObject = options.data;
 
     if (!Parse.applicationId) {
@@ -1566,6 +1586,15 @@
     }
 
     
+    if (!sessionToken) {
+      // Use the current user session token if none was provided.
+      var currentUser = Parse.User.current();
+      if (currentUser && currentUser._sessionToken) {
+        sessionToken = currentUser._sessionToken;
+      }
+    }
+
+    
     if (route !== "batch" &&
         route !== "classes" &&
         route !== "events" &&
@@ -1574,6 +1603,7 @@
         route !== "login" &&
         route !== "push" &&
         route !== "requestPasswordReset" &&
+        route !== "rest_verify_analytics" &&
         route !== "users" &&
         route !== "jobs") {
       throw "Bad route: '" + route + "'.";
@@ -1610,10 +1640,8 @@
 
     dataObject._ClientVersion = Parse.VERSION;
     dataObject._InstallationId = Parse._getInstallationId();
-    // Pass the session token on every request.
-    var currentUser = Parse.User.current();
-    if (currentUser && currentUser._sessionToken) {
-      dataObject._SessionToken = currentUser._sessionToken;
+    if (sessionToken) {
+      dataObject._SessionToken = sessionToken;
     }
     var data = JSON.stringify(dataObject);
 
@@ -1624,14 +1652,19 @@
       if (response && response.responseText) {
         try {
           var errorJSON = JSON.parse(response.responseText);
-          if (errorJSON) {
-            error = new Parse.Error(errorJSON.code, errorJSON.error);
-          }
+          error = new Parse.Error(errorJSON.code, errorJSON.error);
         } catch (e) {
           // If we fail to parse the error text, that's okay.
+          error = new Parse.Error(
+              Parse.Error.INVALID_JSON,
+              "Received an error with invalid JSON from Parse: " +
+                  response.responseText);
         }
+      } else {
+        error = new Parse.Error(
+            Parse.Error.CONNECTION_FAILED,
+            "XMLHttpRequest failed: " + JSON.stringify(response));
       }
-      error = error || new Parse.Error(-1, response.responseText);
       // By explicitly returning a rejected Promise, this will work with
       // either jQuery or Promises/A semantics.
       return Parse.Promise.error(error);
@@ -1898,7 +1931,10 @@
      * to the server completes.
      */
     track: function(name, dimensions) {
-      if (!name || name.trim().length === 0) {
+      name = name || '';
+      name = name.replace(/^\s*/, '');
+      name = name.replace(/\s*$/, '');
+      if (name.length === 0) {
         throw 'A name for the custom event must be provided';
       }
 
@@ -2259,7 +2295,22 @@
      * detail about each error that occurred.
      * @constant
      */
-    AGGREGATE_ERROR: 600
+    AGGREGATE_ERROR: 600,
+
+    /**
+     * Error code indicating the client was unable to read an input file.
+     * @constant
+     */
+    FILE_READ_ERROR: 601,
+
+    /**
+     * Error code indicating a real error code is unavailable because
+     * we had to use an XDomainRequest object to allow CORS requests in
+     * Internet Explorer, which strips the body from HTTP responses that have
+     * a non-2XX status code.
+     * @constant
+     */
+    X_DOMAIN_REQUEST: 602
   });
 
 }(this));
@@ -3736,6 +3787,28 @@
     },
 
     /**
+     * Add handlers to be called when the promise 
+     * is either resolved or rejected
+     */
+    always: function(callback) {
+      return this.then(callback, callback);
+    },
+
+    /**
+     * Add handlers to be called when the Promise object is resolved
+     */
+    done: function(callback) {
+      return this.then(callback);
+    },
+
+    /**
+     * Add handlers to be called when the Promise object is rejected
+     */
+    fail: function(callback) {
+      return this.then(null, callback);
+    },
+
+    /**
      * Run the given callbacks after this promise is fulfilled.
      * @param optionsOrCallback {} A Backbone-style options callback, or a
      * callback function. If this is an options object and contains a "model"
@@ -4066,21 +4139,25 @@
 
     if (typeof(FileReader) === "undefined") {
       return Parse.Promise.error(new Parse.Error(
-          -1, "Attempted to use a FileReader on an unsupported browser."));
+          Parse.Error.FILE_READ_ERROR,
+          "Attempted to use a FileReader on an unsupported browser."));
     }
 
     var reader = new FileReader();
     reader.onloadend = function() {
       if (reader.readyState !== 2) {
-        promise.reject(new Parse.Error(-1, "Error reading file."));
+        promise.reject(new Parse.Error(
+            Parse.Error.FILE_READ_ERROR,
+            "Error reading file."));
         return;
       }
 
       var dataURL = reader.result;
       var matches = /^data:([^;]*);base64,(.*)$/.exec(dataURL);
       if (!matches) {
-        promise.reject(
-            new Parse.Error(-1, "Unable to interpret data URL: " + dataURL));
+        promise.reject(new Parse.Error(
+            Parse.ERROR.FILE_READ_ERROR,
+            "Unable to interpret data URL: " + dataURL));
         return;
       }
 
@@ -4094,8 +4171,10 @@
    * A Parse.File is a local representation of a file that is saved to the Parse
    * cloud.
    * @class
-   * @param name {String} The file's name. This will change to a unique value
-   *     once the file has finished saving.
+   * @param name {String} The file's name. This will be prefixed by a unique
+   *     value once the file has finished saving. The file name must begin with
+   *     an alphanumeric character, and consist of alphanumeric characters,
+   *     periods, spaces, underscores, or dashes.
    * @param data {Array} The data for the file, as either:
    *     1. an Array of byte value Numbers, or
    *     2. an Object like { base64: "..." } with a base64-encoded String.
@@ -4130,7 +4209,20 @@
     if (_.isArray(data)) {
       this._source = Parse.Promise.as(encodeBase64(data), guessedType);
     } else if (data && data.base64) {
-      this._source = Parse.Promise.as(data.base64, guessedType);
+      // if it contains data uri, extract based64 and the type out of it.
+      /*jslint maxlen: 1000*/
+      var dataUriRegexp = /^data:([a-zA-Z]*\/[a-zA-Z+.-]*);(charset=[a-zA-Z0-9\-\/\s]*,)?base64,(\S+)/;
+      /*jslint maxlen: 80*/
+
+      var matches = dataUriRegexp.exec(data.base64);
+      if (matches && matches.length > 0) {
+        // if data URI with charset, there will have 4 matches.
+        this._source = Parse.Promise.as(
+          (matches.length === 4 ? matches[3] : matches[2]), matches[1]
+        );
+      } else {
+        this._source = Parse.Promise.as(data.base64, guessedType);
+      }
     } else if (typeof(File) !== "undefined" && data instanceof File) {
       this._source = readAsync(data, type);
     } else if (_.isString(data)) {
@@ -4563,6 +4655,14 @@
     },
 
     /**
+     * Returns an array of keys that have been modified since last save/refresh
+     * @return {Array of string}
+     */
+    dirtyKeys: function() {
+      return _.keys(_.last(this._opSetQueue));
+    },
+
+    /**
      * Gets a Pointer referencing this Object.
      */
     _toPointer: function() {
@@ -4733,15 +4833,18 @@
      * the given object.
      */
     _finishFetch: function(serverData, hasData) {
+      
       // Clear out any changes the user might have made previously.
       this._opSetQueue = [{}];
 
       // Bring in all the new server data.
       this._mergeMagicFields(serverData);
       var self = this;
+      var tempServerData = {};
       Parse._objectEach(serverData, function(value, key) {
-        self._serverData[key] = Parse._decode(key, value);
+        tempServerData[key] = Parse._decode(key, value);
       });
+      self._serverData = tempServerData;
 
       // Refresh the attributes.
       this._rebuildAllEstimatedData();
@@ -5497,6 +5600,15 @@
         return new Parse.Error(Parse.Error.OTHER_CAUSE,
                                "ACL must be a Parse.ACL.");
       }
+      var correct = true;
+      Parse._objectEach(attrs, function(unused_value, key) {
+        if (!(/^[A-Za-z][0-9A-Za-z_]*$/).test(key)) {
+          correct = false;
+        }
+      });
+      if (!correct) {
+        return new Parse.Error(Parse.Error.INVALID_KEY_NAME); 
+      }
       return false;
     },
 
@@ -5585,14 +5697,22 @@
    *
    * <p>You should call either:<pre>
    *     var MyClass = Parse.Object.extend("MyClass", {
-   *         <i>Instance properties</i>
+   *         <i>Instance methods</i>,
+   *         initialize: function(attrs, options) {
+   *             this.someInstanceProperty = [],
+   *             <i>Other instance properties</i>
+   *         }
    *     }, {
    *         <i>Class properties</i>
    *     });</pre>
    * or, for Backbone compatibility:<pre>
    *     var MyClass = Parse.Object.extend({
    *         className: "MyClass",
-   *         <i>Other instance properties</i>
+   *         <i>Instance methods</i>,
+   *         initialize: function(attrs, options) {
+   *             this.someInstanceProperty = [],
+   *             <i>Other instance properties</i>
+   *         }
    *     }, {
    *         <i>Class properties</i>
    *     });</pre></p>
@@ -5616,9 +5736,11 @@
     }
 
     // If someone tries to subclass "User", coerce it to the right type.
-    if (className === "User") {
+    if (className === "User" && Parse.User._performUserRewrite) {
       className = "_User";
     }
+    protoProps = protoProps || {};
+    protoProps.className = className;
 
     var NewClassObject = null;
     if (_.has(Parse.Object._classMap, className)) {
@@ -5628,8 +5750,6 @@
       // For now, let's just pick one.
       NewClassObject = OldClassObject._extend(protoProps, classProps);
     } else {
-      protoProps = protoProps || {};
-      protoProps.className = className;
       NewClassObject = this._extend(protoProps, classProps);
     }
     // Extending a subclass should reuse the classname automatically.
@@ -7038,6 +7158,9 @@
     // The mapping of auth provider names to actual providers
     _authProviders: {},
 
+    // Whether to rewrite className User to _User
+    _performUserRewrite: true,
+
 
     // Class Methods
 
@@ -7083,6 +7206,37 @@
       var user = Parse.Object._create("_User");
       user._finishFetch({ username: username, password: password });
       return user.logIn(options);
+    },
+
+    /**
+     * Logs in a user with a session token. On success, this saves the session
+     * to disk, so you can retrieve the currently logged in user using
+     * <code>current</code>.
+     *
+     * <p>Calls options.success or options.error on completion.</p>
+     *
+     * @param {String} sessionToken The sessionToken to log in with.
+     * @param {Object} options A Backbone-style options object.
+     * @return {Parse.Promise} A promise that is fulfilled with the user when
+     *     the login completes.
+     */
+    become: function(sessionToken, options) {
+      options = options || {};
+
+      var user = Parse.Object._create("_User");
+      return Parse._request({
+        route: "users",
+        className: "me",
+        method: "GET",
+        useMasterKey: options.useMasterKey,
+        sessionToken: sessionToken
+      }).then(function(resp, status, xhr) {
+        var serverAttrs = user.parse(resp, status, xhr);
+        user._finishFetch(serverAttrs);
+        user._handleSaveResult(true);
+        return user;
+
+      })._thenRunCallbacks(options, user);
     },
 
     /**
@@ -7161,6 +7315,18 @@
       Parse.User._currentUser._refreshCache();
       Parse.User._currentUser._opSetQueue = [{}];
       return Parse.User._currentUser;
+    },
+
+    /**
+     * Allow someone to define a custom User class without className
+     * being rewritten to _User. The default behavior is to rewrite
+     * User to _User for legacy reasons. This allows developers to
+     * override that behavior.
+     *
+     * @param {Boolean} isAllowed Whether or not to allow custom User class
+     */
+    allowCustomUserClass: function(isAllowed) {
+      this._performUserRewrite = !isAllowed;
     },
 
     /**
