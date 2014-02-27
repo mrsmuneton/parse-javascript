@@ -1,10 +1,10 @@
 /*!
  * Parse JavaScript SDK
- * Version: 1.2.15
- * Built: Mon Dec 16 2013 14:42:11
+ * Version: 1.2.17
+ * Built: Fri Feb 21 2014 17:32:23
  * http://parse.com
  *
- * Copyright 2013 Parse, Inc.
+ * Copyright 2014 Parse, Inc.
  * The Parse JavaScript SDK is freely distributable under the MIT license.
  *
  * Includes: Underscore.js
@@ -13,7 +13,7 @@
  */
 (function(root) {
   root.Parse = root.Parse || {};
-  root.Parse.VERSION = "js1.2.15";
+  root.Parse.VERSION = "js1.2.17";
 }(this));
 //     Underscore.js 1.4.4
 //     http://underscorejs.org
@@ -3559,7 +3559,7 @@
    *    });
    * </pre></p>
    *
-   * @see Parse.Promise.prototype.next
+   * @see Parse.Promise.prototype.then
    * @class
    */
   Parse.Promise = function() {
@@ -3603,8 +3603,26 @@
      * Returns a new promise that is fulfilled when all of the input promises
      * are resolved. If any promise in the list fails, then the returned promise
      * will fail with the last error. If they all succeed, then the returned
-     * promise will succeed, with the result being an array with the results of
-     * all the input promises.
+     * promise will succeed, with the results being the results of all the input
+     * promises. For example: <pre>
+     *   var p1 = Parse.Promise.as(1);
+     *   var p2 = Parse.Promise.as(2);
+     *   var p3 = Parse.Promise.as(3);
+     *
+     *   Parse.Promise.when(p1, p2, p3).then(function(r1, r2, r3) {
+     *     console.log(r1);  // prints 1
+     *     console.log(r2);  // prints 2
+     *     console.log(r3);  // prints 3
+     *   });</pre>
+     *
+     * The input promises can also be specified as an array: <pre>
+     *   var promises = [p1, p2, p3];
+     *   Parse.Promise.when(promises).then(function(r1, r2, r3) {
+     *     console.log(r1);  // prints 1
+     *     console.log(r2);  // prints 2
+     *     console.log(r3);  // prints 3
+     *   });
+     * </pre>
      * @param {Array} promises a list of promises to wait for.
      * @return {Parse.Promise} the new promise.
      */
@@ -4367,9 +4385,8 @@
   /**
    * Saves the given list of Parse.Object.
    * If any error is encountered, stops and calls the error handler.
-   * There are two ways you can call this function.
    *
-   * The Backbone way:<pre>
+   * <pre>
    *   Parse.Object.saveAll([object1, object2, ...], {
    *     success: function(list) {
    *       // All the objects were saved.
@@ -4377,15 +4394,6 @@
    *     error: function(error) {
    *       // An error occurred while saving one of the objects.
    *     },
-   *   });
-   * </pre>
-   * A simplified syntax:<pre>
-   *   Parse.Object.saveAll([object1, object2, ...], function(list, error) {
-   *     if (list) {
-   *       // All the objects were saved.
-   *     } else {
-   *       // An error occurred.
-   *     }
    *   });
    * </pre>
    *
@@ -4425,9 +4433,7 @@
    *       instance, a connection failure in the middle of the delete).</li>
    * </ul>
    *
-   * <p>There are two ways you can call this function.
-   * 
-   * The Backbone way:<pre>
+   * <pre>
    *   Parse.Object.destroyAll([object1, object2, ...], {
    *     success: function() {
    *       // All the objects were deleted.
@@ -4446,26 +4452,6 @@
    *         console.log("Delete aborted because of " + error.message);
    *       }
    *     },
-   *   });
-   * </pre>
-   * A simplified syntax:<pre>
-   *   Parse.Object.destroyAll([obj1, obj2, ...], function(success, error) {
-   *     if (success) {
-   *       // All the objects were saved.
-   *     } else {
-   *       // An error occurred while deleting one or more of the objects.
-   *       // If this is an aggregate error, then we can inspect each error
-   *       // object individually to determine the reason why a particular
-   *       // object was not deleted.
-   *       if (error.code == Parse.Error.AGGREGATE_ERROR) {
-   *         for (var i = 0; i < error.errors.length; i++) {
-   *           console.log("Couldn't delete " + error.errors[i].object.id + 
-   *             "due to " + error.errors[i].message);
-   *         }
-   *       } else {
-   *         console.log("Delete aborted because of " + error.message);
-   *       }
-   *     }
    *   });
    * </pre>
    *
@@ -4553,6 +4539,64 @@
       }
     })._thenRunCallbacks(options);
   };
+
+  /**
+   * Fetches the given list of Parse.Object.
+   * If any error is encountered, stops and calls the error handler.
+   *
+   * <pre>
+   *   Parse.Object.fetchAll([object1, object2, ...], {
+   *     success: function(list) {
+   *       // All the objects were fetched.
+   *     },
+   *     error: function(error) {
+   *       // An error occurred while fetching one of the objects.
+   *     },
+   *   });
+   * </pre>
+   *
+   * @param {Array} list A list of <code>Parse.Object</code>.
+   * @param {Object} options A Backbone-style callback object.
+   * Valid options are:<ul>
+   *   <li>success: A Backbone-style success callback.
+   *   <li>error: An Backbone-style error callback.   
+   * </ul>
+   */
+  Parse.Object.fetchAll = function(list, options) {
+    return Parse.Object._fetchAll(
+      list, 
+      true
+    )._thenRunCallbacks(options);    
+  };  
+
+  /**
+   * Fetches the given list of Parse.Object if needed.
+   * If any error is encountered, stops and calls the error handler.
+   *
+   * <pre>
+   *   Parse.Object.fetchAllIfNeeded([object1, ...], {
+   *     success: function(list) {
+   *       // Objects were fetched and updated.
+   *     },
+   *     error: function(error) {
+   *       // An error occurred while fetching one of the objects.
+   *     },
+   *   });
+   * </pre>
+   *
+   * @param {Array} list A list of <code>Parse.Object</code>.
+   * @param {Object} options A Backbone-style callback object.
+   * Valid options are:<ul>
+   *   <li>success: A Backbone-style success callback.
+   *   <li>error: An Backbone-style error callback.   
+   * </ul>
+   */
+  Parse.Object.fetchAllIfNeeded = function(list, options) {    
+    return Parse.Object._fetchAll(
+      list, 
+      false
+    )._thenRunCallbacks(options);
+  };    
 
   // Attach all inheritable methods to the Parse.Object prototype.
   _.extend(Parse.Object.prototype, Parse.Events,
@@ -4753,6 +4797,48 @@
     },
 
     /**
+     * Copies the given serverData to "this", refreshes attributes, and
+     * clears pending changes;
+     */
+    _copyServerData: function(serverData) {
+      // Copy server data
+      var tempServerData = {};
+      Parse._objectEach(serverData, function(value, key) {
+        tempServerData[key] = Parse._decode(key, value);
+      });
+      this._serverData = tempServerData;
+
+      // Refresh the attributes.
+      this._rebuildAllEstimatedData();
+
+      
+      // Clear out any changes the user might have made previously.
+      this._refreshCache();
+      this._opSetQueue = [{}];
+
+      // Refresh the attributes again.
+      this._rebuildAllEstimatedData();       
+    },
+
+    /**
+     * Merges another object's attributes into this object.
+     */
+    _mergeFromObject: function(other) {
+      if (!other) {
+        return;
+      }
+      
+      // This does the inverse of _mergeMagicFields.
+      this.id = other.id;
+      this.createdAt = other.createdAt;
+      this.updatedAt = other.updatedAt;
+
+      this._copyServerData(other._serverData);
+
+      this._hasData = true;
+    },
+
+    /**
      * Returns the json to be sent to the server.
      */
     _startSave: function() {
@@ -4834,24 +4920,11 @@
      */
     _finishFetch: function(serverData, hasData) {
       
-      // Clear out any changes the user might have made previously.
       this._opSetQueue = [{}];
 
       // Bring in all the new server data.
       this._mergeMagicFields(serverData);
-      var self = this;
-      var tempServerData = {};
-      Parse._objectEach(serverData, function(value, key) {
-        tempServerData[key] = Parse._decode(key, value);
-      });
-      self._serverData = tempServerData;
-
-      // Refresh the attributes.
-      this._rebuildAllEstimatedData();
-
-      // Clear out the cache of mutable containers.
-      this._refreshCache();
-      this._opSetQueue = [{}];
+      this._copyServerData(serverData);
 
       this._hasData = hasData;
     },
@@ -5680,6 +5753,88 @@
     var ObjectClass = Parse.Object._getSubclass(className);
     return new ObjectClass(attributes, options);
   };
+  
+  /**
+   * Returns a list of object ids given a list of objects.
+   */
+  Parse.Object._toObjectIdArray = function(list, omitObjectsWithData) {
+    if (list.length === 0) {
+      return Parse.Promise.as(list);
+    }
+
+    var error;
+    var className = list[0].className;
+    var objectIds = [];   
+    for (var i = 0; i < list.length; i++) {
+      var object = list[i];
+      if (className !== object.className) {
+        error = new Parse.Error(Parse.Error.INVALID_CLASS_NAME, 
+                                "All objects should be of the same class");
+        return Parse.Promise.error(error);
+      } else if (!object.id) {
+        error = new Parse.Error(Parse.Error.MISSING_OBJECT_ID,
+                                "All objects must have an ID");
+        return Parse.Promise.error(error);
+      } else if (omitObjectsWithData && object._hasData) {
+        continue;
+      }
+      objectIds.push(object.id);
+    }
+
+    return Parse.Promise.as(objectIds);
+  };
+
+  /**
+   * Updates a list of objects with fetched results.
+   */
+  Parse.Object._updateWithFetchedResults = function(list, fetched, forceFetch) {
+    var fetchedObjectsById = {};
+    Parse._arrayEach(fetched, function(object, i) {
+      fetchedObjectsById[object.id] = object;
+    });
+
+    for (var i = 0; i < list.length; i++) {
+      var object = list[i];  
+      var fetchedObject = fetchedObjectsById[object.id];
+      if (!fetchedObject && forceFetch) {
+        var error = new Parse.Error(Parse.Error.OBJECT_NOT_FOUND,
+                                "All objects must exist on the server");
+        return Parse.Promise.error(error);        
+      }   
+
+      object._mergeFromObject(fetchedObject);
+    }
+
+    return Parse.Promise.as(list);
+  };  
+  
+  /**
+   * Fetches the objects given in list.  The forceFetch option will fetch all
+   * objects if true and ignore objects with data if false.
+   */
+  Parse.Object._fetchAll = function(list, forceFetch) {    
+    if (list.length === 0) {
+      return Parse.Promise.as(list);
+    } 
+    
+    var omitObjectsWithData = !forceFetch;
+    return Parse.Object._toObjectIdArray(
+      list, 
+      omitObjectsWithData
+    ).then(function(objectIds) {
+      var className = list[0].className;
+      var query = new Parse.Query(className);
+      query.containedIn("objectId", objectIds);
+      query.limit = objectIds.length;
+      return query.find();
+    }).then(function(results) {
+      return Parse.Object._updateWithFetchedResults(
+        list, 
+        results, 
+        forceFetch
+      );
+    });   
+  };  
 
   // Set up a map of className to class so that we can create new instances of
   // Parse Objects from JSON automatically.
@@ -6746,6 +6901,16 @@
 
 
     // Instance Methods
+    
+    /**
+     * Merges another object's attributes into this object.
+     */
+    _mergeFromObject: function(other) {
+      if (other.getSessionToken()) {
+        this._sessionToken = other.getSessionToken();      
+      }    
+      Parse.User.__super__._mergeFromObject.call(this, other);
+    },    
 
     /**
      * Internal method to handle special fields in a _User response.
@@ -7139,6 +7304,16 @@
     authenticated: function() {
       return !!this._sessionToken &&
           (Parse.User.current() && Parse.User.current().id === this.id);
+    },
+
+    /**
+     * Returns the session token for this user, if the user has been logged in,
+     * or if it is the result of a query with the master key. Otherwise, returns
+     * undefined.
+     * @return {String} the session token, or undefined
+     */
+    getSessionToken: function() {
+      return this._sessionToken;
     }
 
   }, /** @lends Parse.User */ {
@@ -7481,13 +7656,20 @@
      * Valid options are:<ul>
      *   <li>success: A Backbone-style success callback
      *   <li>error: An Backbone-style error callback.
+     *   <li>useMasterKey: In Cloud Code and Node only, causes the Master Key to
+     *     be used for this request.
      * </ul>
      */
     get: function(objectId, options) {
       var self = this;
       self.equalTo('objectId', objectId);
 
-      return self.first().then(function(response) {
+      var firstOptions = {};
+      if (options && _.has(options, 'useMasterKey')) {
+        firstOptions = { useMasterKey: options.useMasterKey };
+      }
+
+      return self.first(firstOptions).then(function(response) {
         if (response) {
           return response;
         }
@@ -7521,7 +7703,7 @@
         params.skip = this._skip;
       }
       if (this._order !== undefined) {
-        params.order = this._order;
+        params.order = this._order.join(",");
       }
 
       Parse._objectEach(this._extraOptions, function(v, k) {
@@ -7990,22 +8172,70 @@
     /**
      * Sorts the results in ascending order by the given key.
      * 
-     * @param {String} key The key to order by.
+     * @param {(String|String[]|...String} key The key to order by, which is a 
+     * string of comma separated values, or an Array of keys, or multiple keys.
      * @return {Parse.Query} Returns the query, so you can chain this call.
      */
-    ascending: function(key) {
-      this._order = key;
+    ascending: function() {
+      this._order = [];
+      return this.addAscending.apply(this, arguments);
+    },
+
+    /**
+     * Sorts the results in ascending order by the given key, 
+     * but can also add secondary sort descriptors without overwriting _order.
+     * 
+     * @param {(String|String[]|...String} key The key to order by, which is a
+     * string of comma separated values, or an Array of keys, or multiple keys.
+     * @return {Parse.Query} Returns the query, so you can chain this call.
+     */
+    addAscending: function(key) {
+      var self = this; 
+      if (!this._order) {
+        this._order = [];
+      }
+      Parse._arrayEach(arguments, function(key) {
+        if (Array.isArray(key)) {
+          key = key.join();
+        }
+        self._order = self._order.concat(key.replace(/\s/g, "").split(","));
+      });
       return this;
     },
 
     /**
      * Sorts the results in descending order by the given key.
      * 
-     * @param {String} key The key to order by.
+     * @param {(String|String[]|...String} key The key to order by, which is a
+     * string of comma separated values, or an Array of keys, or multiple keys.
      * @return {Parse.Query} Returns the query, so you can chain this call.
      */
     descending: function(key) {
-      this._order = "-" + key;
+      this._order = [];
+      return this.addDescending.apply(this, arguments);
+    },
+
+    /**
+     * Sorts the results in descending order by the given key,
+     * but can also add secondary sort descriptors without overwriting _order.
+     * 
+     * @param {(String|String[]|...String} key The key to order by, which is a
+     * string of comma separated values, or an Array of keys, or multiple keys.
+     * @return {Parse.Query} Returns the query, so you can chain this call.
+     */
+    addDescending: function(key) {
+      var self = this; 
+      if (!this._order) {
+        this._order = [];
+      }
+      Parse._arrayEach(arguments, function(key) {
+        if (Array.isArray(key)) {
+          key = key.join();
+        }
+        self._order = self._order.concat(
+          _.map(key.replace(/\s/g, "").split(","), 
+            function(k) { return "-" + k; }));
+      });
       return this;
     },
 
@@ -8861,8 +9091,8 @@
       data.expiration_time = data.expiration_time.toJSON();
     }
 
-    if (data.expiration_time && data.expiration_time_interval) {
-      throw "Both expiration_time and expiration_time_interval can't be set";
+    if (data.expiration_time && data.expiration_interval) {
+      throw "Both expiration_time and expiration_interval can't be set";
     }
 
     var request = Parse._request({
