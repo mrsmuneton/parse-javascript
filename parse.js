@@ -1,10 +1,10 @@
 /*!
  * Parse JavaScript SDK
- * Version: 1.3.0
- * Built: Thu Sep 04 2014 15:41:30
+ * Version: 1.3.5
+ * Built: Thu Feb 19 2015 14:12:57
  * http://parse.com
  *
- * Copyright 2014 Parse, Inc.
+ * Copyright 2015 Parse, Inc.
  * The Parse JavaScript SDK is freely distributable under the MIT license.
  *
  * Includes: Underscore.js
@@ -13,7 +13,7 @@
  */
 (function(root) {
   root.Parse = root.Parse || {};
-  root.Parse.VERSION = "js1.3.0";
+  root.Parse.VERSION = "js1.3.5";
 }(this));
 //     Underscore.js 1.4.4
 //     http://underscorejs.org
@@ -1244,7 +1244,7 @@
 
 /*global _: false, $: false, localStorage: false, process: true,
   XMLHttpRequest: false, XDomainRequest: false, exports: false,
-  require: false */
+  require: false, setTimeout: true */
 (function(root) {
   root.Parse = root.Parse || {};
   /**
@@ -1256,21 +1256,24 @@
    */
   var Parse = root.Parse;
 
-  // Import Parse's local copy of underscore.
-  if (typeof(exports) !== "undefined" && exports._) {
-    // We're running in Node.js.  Pull in the dependencies.
-    Parse._ = exports._.noConflict();
+  // Load references to other dependencies
+  if (typeof(localStorage) !== 'undefined') {
+    Parse.localStorage = localStorage;
+  } else if (typeof(require) !== 'undefined') {
     Parse.localStorage = require('localStorage');
+  }
+  if (typeof(XMLHttpRequest) !== 'undefined') {
+    Parse.XMLHttpRequest = XMLHttpRequest;
+  } else if (typeof(require) !== 'undefined') {
     Parse.XMLHttpRequest = require('xmlhttprequest').XMLHttpRequest;
+  }
+  // Import Parse's local copy of underscore.
+  if (typeof(exports) !== 'undefined' && exports._) {
+    // We're running in a CommonJS environment
+    Parse._ = exports._.noConflict();
     exports.Parse = Parse;
   } else {
     Parse._ = _.noConflict();
-    if (typeof(localStorage) !== "undefined") {
-      Parse.localStorage = localStorage;
-    }
-    if (typeof(XMLHttpRequest) !== "undefined") {
-      Parse.XMLHttpRequest = XMLHttpRequest;
-    }
   }
 
   // If jQuery or Zepto has been included, grab a reference to it.
@@ -1515,40 +1518,58 @@
     }
 
     var promise = new Parse.Promise();
-    var handled = false;
+    var attempts = 0;
 
-    var xhr = new Parse.XMLHttpRequest();
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState === 4) {
-        if (handled) {
-          return;
-        }
-        handled = true;
+    var dispatch = function() {
+      var handled = false;
+      var xhr = new Parse.XMLHttpRequest();
 
-        if (xhr.status >= 200 && xhr.status < 300) {
-          var response;
-          try {
-            response = JSON.parse(xhr.responseText);
-          } catch (e) {
-            promise.reject(e);
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+          if (handled) {
+            return;
           }
-          if (response) {
-            promise.resolve(response, xhr.status, xhr);
+          handled = true;
+
+          if (xhr.status >= 200 && xhr.status < 300) {
+            var response;
+            try {
+              response = JSON.parse(xhr.responseText);
+            } catch (e) {
+              promise.reject(e);
+            }
+            if (response) {
+              promise.resolve(response, xhr.status, xhr);
+            }
+          } else if (xhr.status >= 500) { // Retry on 5XX
+            if (++attempts < 5) {
+              // Exponentially-growing delay
+              var delay = Math.round(
+                Math.random() * 125 * Math.pow(2, attempts)
+              );
+              setTimeout(dispatch, delay);
+            } else {
+              // After 5 retries, fail
+              promise.reject(xhr);
+            }
+          } else {
+            promise.reject(xhr);
           }
-        } else {
-          promise.reject(xhr);
         }
+      };
+
+      xhr.open(method, url, true);
+      xhr.setRequestHeader('Content-Type', 'text/plain');  // avoid pre-flight.
+      if (Parse._isNode) {
+        // Add a special user agent just for request from node.js.
+        xhr.setRequestHeader("User-Agent",
+                             "Parse/" + Parse.VERSION +
+                             " (NodeJS " + process.versions.node + ")");
       }
+      xhr.send(data);
     };
-    xhr.open(method, url, true);
-    xhr.setRequestHeader("Content-Type", "text/plain");  // avoid pre-flight.
-    if (Parse._isNode) {
-      // Add a special user agent just for request from node.js.
-      xhr.setRequestHeader("User-Agent",
-                           "Parse/" + Parse.VERSION +
-                           " (NodeJS " + process.versions.node + ")");
-    }
-    xhr.send(data);
+
+    dispatch();
     return promise._thenRunCallbacks(options);
   };
 
@@ -1922,16 +1943,17 @@
      * Parse.Analytics.track('signup', dimensions);
      * </pre>
      *
-     * There is a default limit of 4 dimensions per event tracked.
+     * There is a default limit of 8 dimensions per event tracked.
      *
      * @param {String} name The name of the custom event to report to Parse as
      * having happened.
      * @param {Object} dimensions The dictionary of information by which to
      * segment this event.
+     * @param {Object} options A Backbone-style callback object.
      * @return {Parse.Promise} A promise that is resolved when the round-trip
      * to the server completes.
      */
-    track: function(name, dimensions) {
+    track: function(name, dimensions, options) {
       name = name || '';
       name = name.replace(/^\s*/, '');
       name = name.replace(/\s*$/, '');
@@ -1945,12 +1967,13 @@
         }
       });
 
+      options = options || {};
       return Parse._request({
         route: 'events',
         className: name,
         method: 'POST',
         data: { dimensions: dimensions }
-      });
+      })._thenRunCallbacks(options);
     }
   });
 }(this));
@@ -2273,12 +2296,6 @@
     FILE_SAVE_ERROR: 130,
 
     /**
-     * Error code indicating an error deleting a file.
-     * @constant
-     */
-    FILE_DELETE_ERROR: 153,
-
-    /**
      * Error code indicating that a unique field was given a value that is
      * already taken.
      * @constant
@@ -2326,6 +2343,24 @@
      * Error code indicating an invalid push time.
      */
     INVALID_PUSH_TIME_ERROR: 152,
+
+    /**
+     * Error code indicating an error deleting a file.
+     * @constant
+     */
+    FILE_DELETE_ERROR: 153,
+
+    /**
+     * Error code indicating that the application has exceeded its request
+     * limit.
+     * @constant
+     */
+    REQUEST_LIMIT_EXCEEDED: 155,
+
+    /**
+     * Error code indicating an invalid event name.
+     */
+    INVALID_EVENT_NAME: 160,
 
     /**
      * Error code indicating that the username is missing or empty.
@@ -2515,6 +2550,7 @@
         node = calls[event];
         delete calls[event];
         if (!node || !(callback || context)) {
+          event = events.shift();
           continue;
         }
         // Create a new list, omitting the indicated callbacks.
@@ -4330,7 +4366,7 @@
       var matches = /^data:([^;]*);base64,(.*)$/.exec(dataURL);
       if (!matches) {
         promise.reject(new Parse.Error(
-            Parse.ERROR.FILE_READ_ERROR,
+            Parse.Error.FILE_READ_ERROR,
             "Unable to interpret data URL: " + dataURL));
         return;
       }
@@ -4534,8 +4570,27 @@
   };
 
   /**
-   * @lends Parse.Object.prototype
-   * @property {String} id The objectId of the Parse Object.
+   * The ID of this object, unique within its class.
+   * @name id
+   * @type String
+   * @field
+   * @memberOf Parse.Object.prototype
+   */
+
+  /**
+   * The first time this object was saved on the server.
+   * @name createdAt
+   * @type Date
+   * @field
+   * @memberOf Parse.Object.prototype
+   */
+
+  /**
+   * The last time this object was updated on the server.
+   * @name updatedAt
+   * @type Date
+   * @field
+   * @memberOf Parse.Object.prototype
    */
 
   /**
@@ -4824,7 +4879,17 @@
         if (value instanceof Parse.Object) {
           value._refreshCache();
         } else if (_.isObject(value)) {
-          if (self._resetCacheForKey(key)) {
+          var objectArray = false;
+          if (_.isArray(value)) {
+            // We don't cache arrays of Parse.Objects
+            _.each(value, function(arrVal) {
+              if (arrVal instanceof Parse.Object) {
+                objectArray = true;
+                arrVal._refreshCache();
+              }
+            });
+          }
+          if (!objectArray && self._resetCacheForKey(key)) {
             self.set(key, new Parse.Op.Set(value), { silent: true });
           }
         }
@@ -6074,6 +6139,29 @@
       var newArguments = [className].concat(Parse._.toArray(arguments));
       return Parse.Object.extend.apply(NewClassObject, newArguments);
     };
+
+    /**
+     * Creates a reference to a subclass of Parse.Object with the given id. This
+     * does not exist on Parse.Object, only on subclasses.
+     *
+     * <p>A shortcut for: <pre>
+     *  var Foo = Parse.Object.extend("Foo");
+     *  var pointerToFoo = new Foo();
+     *  pointerToFoo.id = "myObjectId";
+     * </pre>
+     *
+     * @name createWithoutData
+     * @param {String} id The ID of the object to create a reference to.
+     * @return {Parse.Object} A Parse.Object reference.
+     * @function
+     * @memberOf Parse.Object
+     */
+    NewClassObject.createWithoutData = function(id) {
+      var obj = new NewClassObject();
+      obj.id = id;
+      return obj;
+    };
+
     Parse.Object._classMap[className] = NewClassObject;
     return NewClassObject;
   };
@@ -7983,7 +8071,12 @@
 
       return request.then(function(response) {
         return _.map(response.results, function(json) {
-          var obj = new self.objectClass();
+          var obj;
+          if (response.className) {
+            obj = new Parse.Object(response.className);
+          } else {
+            obj = new self.objectClass();
+          }
           obj._finishFetch(json, true);
           return obj;
         })[0];
@@ -8549,6 +8642,9 @@
       query._limit = options.batchSize || 100;
       query._where = _.clone(this._where);
       query._include = _.clone(this._include);
+      if (this._select) {
+        query._select = _.clone(this._select);
+      }
 
       query.ascending('objectId');
 
@@ -8789,7 +8885,7 @@
    * History serves as a global router (per frame) to handle hashchange
    * events or pushState, match the appropriate route, and trigger
    * callbacks. You shouldn't ever have to create one of these yourself
-   * â€” you should use the reference to <code>Parse.history</code>
+   * — you should use the reference to <code>Parse.history</code>
    * that will be created for you automatically if you make use of
    * Routers with routes.
    * @class
