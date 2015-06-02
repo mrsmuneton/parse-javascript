@@ -1,10 +1,10 @@
 /*!
  * Parse JavaScript SDK
- * Version: 1.3.0
- * Built: Thu Sep 04 2014 15:41:30
+ * Version: 1.4.2
+ * Built: Thu Apr 09 2015 17:20:31
  * http://parse.com
  *
- * Copyright 2014 Parse, Inc.
+ * Copyright 2015 Parse, Inc.
  * The Parse JavaScript SDK is freely distributable under the MIT license.
  *
  * Includes: Underscore.js
@@ -13,7 +13,7 @@
  */
 (function(root) {
   root.Parse = root.Parse || {};
-  root.Parse.VERSION = "js1.3.0";
+  root.Parse.VERSION = "js1.4.2";
 }(this));
 //     Underscore.js 1.4.4
 //     http://underscorejs.org
@@ -1244,7 +1244,7 @@
 
 /*global _: false, $: false, localStorage: false, process: true,
   XMLHttpRequest: false, XDomainRequest: false, exports: false,
-  require: false */
+  require: false, setTimeout: true */
 (function(root) {
   root.Parse = root.Parse || {};
   /**
@@ -1256,21 +1256,21 @@
    */
   var Parse = root.Parse;
 
+  var req = typeof(require) === 'function' ? require : null;
+  // Load references to other dependencies
+  if (typeof(XMLHttpRequest) !== 'undefined') {
+    Parse.XMLHttpRequest = XMLHttpRequest;
+  } else if (typeof(require) === 'function' &&
+      typeof(require.ensure) === 'undefined') {
+    Parse.XMLHttpRequest = req('xmlhttprequest').XMLHttpRequest;
+  }
   // Import Parse's local copy of underscore.
-  if (typeof(exports) !== "undefined" && exports._) {
-    // We're running in Node.js.  Pull in the dependencies.
+  if (typeof(exports) !== 'undefined' && exports._) {
+    // We're running in a CommonJS environment
     Parse._ = exports._.noConflict();
-    Parse.localStorage = require('localStorage');
-    Parse.XMLHttpRequest = require('xmlhttprequest').XMLHttpRequest;
     exports.Parse = Parse;
   } else {
     Parse._ = _.noConflict();
-    if (typeof(localStorage) !== "undefined") {
-      Parse.localStorage = localStorage;
-    }
-    if (typeof(XMLHttpRequest) !== "undefined") {
-      Parse.XMLHttpRequest = XMLHttpRequest;
-    }
   }
 
   // If jQuery or Zepto has been included, grab a reference to it.
@@ -1387,7 +1387,7 @@
   }
 
   /**
-   * Returns prefix for localStorage keys used by this instance of Parse.
+   * Returns prefix for Storage keys used by this instance of Parse.
    * @param {String} path The relative suffix to append to it.
    *     null or undefined is treated as the empty string.
    * @return {String} The full key name.
@@ -1400,7 +1400,7 @@
       path = "";
     }
     if (!Parse._.isString(path)) {
-      throw "Tried to get a localStorage path that wasn't a String.";
+      throw "Tried to get a Storage path that wasn't a String.";
     }
     if (path[0] === "/") {
       path = path.substring(1);
@@ -1409,35 +1409,42 @@
   };
 
   /**
-   * Returns the unique string for this app on this machine.
-   * Gets reset when localStorage is cleared.
+   * Returns a Promise that is resolved with the unique string for this app on
+   * this machine.
+   * Gets reset when Storage is cleared.
    */
   Parse._installationId = null;
   Parse._getInstallationId = function() {
     // See if it's cached in RAM.
     if (Parse._installationId) {
-      return Parse._installationId;
+      return Parse.Promise.as(Parse._installationId);
     }
 
-    // Try to get it from localStorage.
+    // Try to get it from Storage.
     var path = Parse._getParsePath("installationId");
-    Parse._installationId = Parse.localStorage.getItem(path);
+    return (Parse.Storage.getItemAsync(path)
+      .then(function(value) {
+        Parse._installationId = value;
 
-    if (!Parse._installationId || Parse._installationId === "") {
-      // It wasn't in localStorage, so create a new one.
-      var hexOctet = function() {
-        return Math.floor((1+Math.random())*0x10000).toString(16).substring(1);
-      };
-      Parse._installationId = (
-        hexOctet() + hexOctet() + "-" +
-        hexOctet() + "-" +
-        hexOctet() + "-" +
-        hexOctet() + "-" +
-        hexOctet() + hexOctet() + hexOctet());
-      Parse.localStorage.setItem(path, Parse._installationId);
-    }
+        if (!Parse._installationId || Parse._installationId === "") {
+          // It wasn't in Storage, so create a new one.
+          var hexOctet = function() {
+            return (
+              Math.floor((1+Math.random())*0x10000).toString(16).substring(1)
+            );
+          };
+          Parse._installationId = (
+            hexOctet() + hexOctet() + "-" +
+            hexOctet() + "-" +
+            hexOctet() + "-" +
+            hexOctet() + "-" +
+            hexOctet() + hexOctet() + hexOctet());
+          return Parse.Storage.setItemAsync(path, Parse._installationId);
+        }
 
-    return Parse._installationId;
+        return Parse.Promise.as(Parse._installationId);
+      })
+    );
   };
 
   Parse._parseDate = function(iso8601) {
@@ -1515,40 +1522,58 @@
     }
 
     var promise = new Parse.Promise();
-    var handled = false;
+    var attempts = 0;
 
-    var xhr = new Parse.XMLHttpRequest();
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState === 4) {
-        if (handled) {
-          return;
-        }
-        handled = true;
+    var dispatch = function() {
+      var handled = false;
+      var xhr = new Parse.XMLHttpRequest();
 
-        if (xhr.status >= 200 && xhr.status < 300) {
-          var response;
-          try {
-            response = JSON.parse(xhr.responseText);
-          } catch (e) {
-            promise.reject(e);
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+          if (handled) {
+            return;
           }
-          if (response) {
-            promise.resolve(response, xhr.status, xhr);
+          handled = true;
+
+          if (xhr.status >= 200 && xhr.status < 300) {
+            var response;
+            try {
+              response = JSON.parse(xhr.responseText);
+            } catch (e) {
+              promise.reject(e);
+            }
+            if (response) {
+              promise.resolve(response, xhr.status, xhr);
+            }
+          } else if (xhr.status >= 500) { // Retry on 5XX
+            if (++attempts < 5) {
+              // Exponentially-growing delay
+              var delay = Math.round(
+                Math.random() * 125 * Math.pow(2, attempts)
+              );
+              setTimeout(dispatch, delay);
+            } else {
+              // After 5 retries, fail
+              promise.reject(xhr);
+            }
+          } else {
+            promise.reject(xhr);
           }
-        } else {
-          promise.reject(xhr);
         }
+      };
+
+      xhr.open(method, url, true);
+      xhr.setRequestHeader('Content-Type', 'text/plain');  // avoid pre-flight.
+      if (Parse._isNode) {
+        // Add a special user agent just for request from node.js.
+        xhr.setRequestHeader("User-Agent",
+                             "Parse/" + Parse.VERSION +
+                             " (NodeJS " + process.versions.node + ")");
       }
+      xhr.send(data);
     };
-    xhr.open(method, url, true);
-    xhr.setRequestHeader("Content-Type", "text/plain");  // avoid pre-flight.
-    if (Parse._isNode) {
-      // Add a special user agent just for request from node.js.
-      xhr.setRequestHeader("User-Agent",
-                           "Parse/" + Parse.VERSION +
-                           " (NodeJS " + process.versions.node + ")");
-    }
-    xhr.send(data);
+
+    dispatch();
     return promise._thenRunCallbacks(options);
   };
 
@@ -1586,27 +1611,21 @@
     }
 
 
-    if (!sessionToken) {
-      // Use the current user session token if none was provided.
-      var currentUser = Parse.User.current();
-      if (currentUser && currentUser._sessionToken) {
-        sessionToken = currentUser._sessionToken;
-      }
-    }
-
-
     if (route !== "batch" &&
         route !== "classes" &&
         route !== "events" &&
         route !== "files" &&
         route !== "functions" &&
         route !== "login" &&
+        route !== "logout" &&
         route !== "push" &&
         route !== "requestPasswordReset" &&
         route !== "rest_verify_analytics" &&
         route !== "users" &&
         route !== "jobs" &&
-        route !== "config") {
+        route !== "config" &&
+        route !== "sessions" &&
+        route !== "upgradeToRevocableSession") {
       throw "Bad route: '" + route + "'.";
     }
 
@@ -1640,13 +1659,28 @@
     }
 
     dataObject._ClientVersion = Parse.VERSION;
-    dataObject._InstallationId = Parse._getInstallationId();
-    if (sessionToken) {
-      dataObject._SessionToken = sessionToken;
-    }
-    var data = JSON.stringify(dataObject);
 
-    return Parse._ajax(method, url, data).then(null, function(response) {
+    return Parse._getInstallationId().then(function(iid) {
+      dataObject._InstallationId = iid;
+
+      if (sessionToken) {
+        return Parse.Promise.as({ _sessionToken: sessionToken });
+      }
+
+      return Parse.User._currentAsync();
+    }).then(function(currentUser) {
+      if (currentUser && currentUser._sessionToken) {
+        dataObject._SessionToken = currentUser._sessionToken;
+      }
+
+      if (Parse.User._isRevocableSessionEnabled) {
+        dataObject._RevocableSession = '1';
+      }
+
+      var data = JSON.stringify(dataObject);
+
+      return Parse._ajax(method, url, data);
+    }).then(null, function(response) {
       // Transform the error into an instance of Parse.Error by trying to parse
       // the error string as JSON.
       var error;
@@ -1891,6 +1925,138 @@
   };
 }(this));
 
+/* global require: false, localStorage: false */
+(function(root) {
+  root.Parse = root.Parse || {};
+  var Parse = root.Parse;
+
+  var Storage = {
+    async: false,
+  };
+
+  var hasLocalStorage = (typeof localStorage !== 'undefined');
+  if (hasLocalStorage) {
+    try {
+      localStorage.setItem('supported', true);
+      localStorage.removeItem('supported');
+    } catch(e) {
+      hasLocalStorage = false;
+    }
+  }
+  if (hasLocalStorage) {
+    Storage.getItem = function(path) {
+      return localStorage.getItem(path);
+    };
+
+    Storage.setItem = function(path, value) {
+      return localStorage.setItem(path, value);
+    };
+
+    Storage.removeItem = function(path) {
+      return localStorage.removeItem(path);
+    };
+
+    Storage.clear = function() {
+      return localStorage.clear();
+    };
+  } else if (typeof require === 'function') {
+    var AsyncStorage;
+    try {
+      AsyncStorage = eval("require('AsyncStorage')"); // jshint ignore:line
+
+      Storage.async = true;
+
+      Storage.getItemAsync = function(path) {
+        var p = new Parse.Promise();
+        AsyncStorage.getItem(path, function(err, value) {
+          if (err) {
+            p.reject(err);
+          } else {
+            p.resolve(value);
+          }
+        });
+        return p;
+      };
+
+      Storage.setItemAsync = function(path, value) {
+        var p = new Parse.Promise();
+        AsyncStorage.setItem(path, value, function(err) {
+          if (err) {
+            p.reject(err);
+          } else {
+            p.resolve(value);
+          }
+        });
+        return p;
+      };
+
+      Storage.removeItemAsync = function(path) {
+        var p = new Parse.Promise();
+        AsyncStorage.removeItem(path, function(err) {
+          if (err) {
+            p.reject(err);
+          } else {
+            p.resolve();
+          }
+        });
+        return p;
+      };
+
+      Storage.clear = function() {
+        AsyncStorage.clear();
+      };
+    } catch (e) { }
+  }
+  if (!Storage.async && !Storage.getItem) {
+    var memMap = Storage.inMemoryMap = {};
+    Storage.getItem = function(path) {
+      if (memMap.hasOwnProperty(path)) {
+        return memMap[path];
+      }
+      return null;
+    };
+
+    Storage.setItem = function(path, value) {
+      memMap[path] = String(value);
+    };
+
+    Storage.removeItem = function(path) {
+      delete memMap[path];
+    };
+
+    Storage.clear = function() {
+      for (var key in memMap) {
+        if (memMap.hasOwnProperty(key)) {
+          delete memMap[key];
+        }
+      }
+    };
+  }
+
+  // We can use synchronous methods from async scenarios, but not vice-versa
+  if (!Storage.async) {
+    Storage.getItemAsync = function(path) {
+      return Parse.Promise.as(
+        Storage.getItem(path)
+      );
+    };
+
+    Storage.setItemAsync = function(path, value) {
+      Storage.setItem(path, value);
+      return Parse.Promise.as(value);
+    };
+
+    Storage.removeItemAsync = function(path) {
+      return Parse.Promise.as(
+        Storage.removeItem(path)
+      );
+    };
+  }
+
+  Parse.Storage = Storage;
+
+})(this);
+
 (function(root) {
   root.Parse = root.Parse || {};
   var Parse = root.Parse;
@@ -1922,16 +2088,17 @@
      * Parse.Analytics.track('signup', dimensions);
      * </pre>
      *
-     * There is a default limit of 4 dimensions per event tracked.
+     * There is a default limit of 8 dimensions per event tracked.
      *
      * @param {String} name The name of the custom event to report to Parse as
      * having happened.
      * @param {Object} dimensions The dictionary of information by which to
      * segment this event.
+     * @param {Object} options A Backbone-style callback object.
      * @return {Parse.Promise} A promise that is resolved when the round-trip
      * to the server completes.
      */
-    track: function(name, dimensions) {
+    track: function(name, dimensions, options) {
       name = name || '';
       name = name.replace(/^\s*/, '');
       name = name.replace(/\s*$/, '');
@@ -1945,12 +2112,13 @@
         }
       });
 
+      options = options || {};
       return Parse._request({
         route: 'events',
         className: name,
         method: 'POST',
         data: { dimensions: dimensions }
-      });
+      })._thenRunCallbacks(options);
     }
   });
 }(this));
@@ -1981,10 +2149,15 @@
       return Parse.Config._currentConfig;
     }
 
-    var configData = Parse.localStorage.getItem(Parse._getParsePath(
+    var config = new Parse.Config();
+
+    if (Parse.Storage.async) {
+      return config;
+    }
+
+    var configData = Parse.Storage.getItem(Parse._getParsePath(
           Parse.Config._CURRENT_CONFIG_KEY));
 
-    var config = new Parse.Config();
     if (configData) {
       config._finishFetch(JSON.parse(configData));
       Parse.Config._currentConfig = config;
@@ -2056,9 +2229,12 @@
 
     _finishFetch: function(serverData) {
       this.attributes = Parse._decode(null, _.clone(serverData.params));
-      Parse.localStorage.setItem(
-          Parse._getParsePath(Parse.Config._CURRENT_CONFIG_KEY),
-          JSON.stringify(serverData));
+      if (!Parse.Storage.async) {
+        // We only provide local caching of config with synchronous Storage
+        Parse.Storage.setItem(
+            Parse._getParsePath(Parse.Config._CURRENT_CONFIG_KEY),
+            JSON.stringify(serverData));
+      }
     }
   };
 
@@ -2273,12 +2449,6 @@
     FILE_SAVE_ERROR: 130,
 
     /**
-     * Error code indicating an error deleting a file.
-     * @constant
-     */
-    FILE_DELETE_ERROR: 153,
-
-    /**
      * Error code indicating that a unique field was given a value that is
      * already taken.
      * @constant
@@ -2326,6 +2496,24 @@
      * Error code indicating an invalid push time.
      */
     INVALID_PUSH_TIME_ERROR: 152,
+
+    /**
+     * Error code indicating an error deleting a file.
+     * @constant
+     */
+    FILE_DELETE_ERROR: 153,
+
+    /**
+     * Error code indicating that the application has exceeded its request
+     * limit.
+     * @constant
+     */
+    REQUEST_LIMIT_EXCEEDED: 155,
+
+    /**
+     * Error code indicating an invalid event name.
+     */
+    INVALID_EVENT_NAME: 160,
 
     /**
      * Error code indicating that the username is missing or empty.
@@ -2382,6 +2570,12 @@
      * @constant
      */
     ACCOUNT_ALREADY_LINKED: 208,
+
+    /**
+     * Error code indicating that the current session token is invalid.
+     * @constant
+     */
+    INVALID_SESSION_TOKEN: 209,
 
     /**
      * Error code indicating that a user cannot be linked to an account because
@@ -2509,12 +2703,13 @@
 
       // Loop through the listed events and contexts, splicing them out of the
       // linked list of callbacks if appropriate.
-      events = events ? events.split(eventSplitter) : _.keys(calls);
+      events = events ? events.split(eventSplitter) : Object.keys(calls);
       event = events.shift();
       while (event) {
         node = calls[event];
         delete calls[event];
         if (!node || !(callback || context)) {
+          event = events.shift();
           continue;
         }
         // Create a new list, omitting the indicated callbacks.
@@ -4330,7 +4525,7 @@
       var matches = /^data:([^;]*);base64,(.*)$/.exec(dataURL);
       if (!matches) {
         promise.reject(new Parse.Error(
-            Parse.ERROR.FILE_READ_ERROR,
+            Parse.Error.FILE_READ_ERROR,
             "Unable to interpret data URL: " + dataURL));
         return;
       }
@@ -4534,8 +4729,27 @@
   };
 
   /**
-   * @lends Parse.Object.prototype
-   * @property {String} id The objectId of the Parse Object.
+   * The ID of this object, unique within its class.
+   * @name id
+   * @type String
+   * @field
+   * @memberOf Parse.Object.prototype
+   */
+
+  /**
+   * The first time this object was saved on the server.
+   * @name createdAt
+   * @type Date
+   * @field
+   * @memberOf Parse.Object.prototype
+   */
+
+  /**
+   * The last time this object was updated on the server.
+   * @name updatedAt
+   * @type Date
+   * @field
+   * @memberOf Parse.Object.prototype
    */
 
   /**
@@ -4824,7 +5038,17 @@
         if (value instanceof Parse.Object) {
           value._refreshCache();
         } else if (_.isObject(value)) {
-          if (self._resetCacheForKey(key)) {
+          var objectArray = false;
+          if (_.isArray(value)) {
+            // We don't cache arrays of Parse.Objects
+            _.each(value, function(arrVal) {
+              if (arrVal instanceof Parse.Object) {
+                objectArray = true;
+                arrVal._refreshCache();
+              }
+            });
+          }
+          if (!objectArray && self._resetCacheForKey(key)) {
             self.set(key, new Parse.Op.Set(value), { silent: true });
           }
         }
@@ -5229,6 +5453,14 @@
         attrs = attrs.attributes;
       }
 
+      var self = this;
+      Parse._objectEach(attrs, function(unused_value, key) {
+        if (self.constructor.readOnlyAttributes &&
+          self.constructor.readOnlyAttributes[key]) {
+          throw new Error('Cannot modify readonly key: ' + key);
+        }
+      });
+
       // If the unset option is used, every attribute should be a Unset.
       if (options.unset) {
         Parse._objectEach(attrs, function(unused_value, key) {
@@ -5238,7 +5470,6 @@
 
       // Apply all the attributes to get the estimated values.
       var dataToValidate = _.clone(attrs);
-      var self = this;
       Parse._objectEach(dataToValidate, function(value, key) {
         if (value instanceof Parse.Op) {
           dataToValidate[key] = value._estimate(self.attributes[key],
@@ -6074,6 +6305,29 @@
       var newArguments = [className].concat(Parse._.toArray(arguments));
       return Parse.Object.extend.apply(NewClassObject, newArguments);
     };
+
+    /**
+     * Creates a reference to a subclass of Parse.Object with the given id. This
+     * does not exist on Parse.Object, only on subclasses.
+     *
+     * <p>A shortcut for: <pre>
+     *  var Foo = Parse.Object.extend("Foo");
+     *  var pointerToFoo = new Foo();
+     *  pointerToFoo.id = "myObjectId";
+     * </pre>
+     *
+     * @name createWithoutData
+     * @param {String} id The ID of the object to create a reference to.
+     * @return {Parse.Object} A Parse.Object reference.
+     * @function
+     * @memberOf Parse.Object
+     */
+    NewClassObject.createWithoutData = function(id) {
+      var obj = new NewClassObject();
+      obj.id = id;
+      return obj;
+    };
+
     Parse.Object._classMap[className] = NewClassObject;
     return NewClassObject;
   };
@@ -7473,7 +7727,37 @@
      */
     getSessionToken: function() {
       return this._sessionToken;
-    }
+    },
+
+    /**
+     * Request a revocable session token to replace the older style of token.
+     * @param {Object} options A Backbone-style options object.
+     *
+     * @return {Parse.Promise} A promise that is resolved when the replacement
+     *   token has been fetched.
+     */
+    _upgradeToRevocableSession: function(options) {
+      options = options || {};
+      if (!Parse.User.current()) {
+        return Parse.Promise.as()._thenRunCallbacks(options);
+      }
+      var currentSession = Parse.User.current().getSessionToken();
+      if (Parse.Session._isRevocable(currentSession)) {
+        return Parse.Promise.as()._thenRunCallbacks(options);
+      }
+      return Parse._request({
+        route: 'upgradeToRevocableSession',
+        method: 'POST',
+        useMasterKey: options.useMasterKey,
+        sessionToken: currentSession
+      }).then(function(result) {
+        var session = new Parse.Session();
+        session._finishFetch(result);
+        var currentUser = Parse.User.current();
+        currentUser._sessionToken = session.getSessionToken();
+        Parse.User._saveCurrentUser(currentUser);
+      })._thenRunCallbacks(options);
+    },
 
   }, /** @lends Parse.User */ {
     // Class Variables
@@ -7494,6 +7778,9 @@
 
     // Whether to rewrite className User to _User
     _performUserRewrite: true,
+
+    // Whether to send a Revocable Session header
+    _isRevocableSessionEnabled: false,
 
 
     // Class Methods
@@ -7577,16 +7864,33 @@
      * Logs out the currently logged in user session. This will remove the
      * session from disk, log out of linked services, and future calls to
      * <code>current</code> will return <code>null</code>.
+     * @return {Parse.Promise} A promise that is resolved when the session is
+     *   destroyed on the server.
      */
     logOut: function() {
-      if (Parse.User._currentUser !== null) {
-        Parse.User._currentUser._logOutWithAll();
-        Parse.User._currentUser._isCurrentUser = false;
-      }
-      Parse.User._currentUserMatchesDisk = true;
-      Parse.User._currentUser = null;
-      Parse.localStorage.removeItem(
+      return Parse.User._currentAsync().then(function(currentUser) {
+        var promise = Parse.Storage.removeItemAsync(
           Parse._getParsePath(Parse.User._CURRENT_USER_KEY));
+
+        if (currentUser !== null) {
+          var currentSession = currentUser.getSessionToken();
+          if (Parse.Session._isRevocable(currentSession)) {
+            promise.then(function() {
+              return Parse._request({
+                route: 'logout',
+                method: 'POST',
+                sessionToken: currentSession
+              });
+            });
+          }
+          currentUser._logOutWithAll();
+          currentUser._isCurrentUser = false;
+        }
+        Parse.User._currentUserMatchesDisk = true;
+        Parse.User._currentUser = null;
+
+        return promise;
+      });
     },
 
     /**
@@ -7617,6 +7921,12 @@
      * @return {Parse.Object} The currently logged in Parse.User.
      */
     current: function() {
+      if (Parse.Storage.async) {
+        // We can't return the current user synchronously
+        Parse.User._currentAsync();
+        return Parse.User._currentUser;
+      }
+
       if (Parse.User._currentUser) {
         return Parse.User._currentUser;
       }
@@ -7629,7 +7939,7 @@
       // Load the user from local storage.
       Parse.User._currentUserMatchesDisk = true;
 
-      var userData = Parse.localStorage.getItem(Parse._getParsePath(
+      var userData = Parse.Storage.getItem(Parse._getParsePath(
           Parse.User._CURRENT_USER_KEY));
       if (!userData) {
 
@@ -7652,6 +7962,43 @@
     },
 
     /**
+     * Retrieves the currently logged in ParseUser from asynchronous Storage.
+     * @return {Parse.Promise} A Promise that is resolved with the currently
+     *   logged in Parse User
+     */
+    _currentAsync: function() {
+      if (Parse.User._currentUser) {
+        return Parse.Promise.as(Parse.User._currentUser);
+      }
+
+      if (Parse.User._currentUserMatchesDisk) {
+        return Parse.Promise.as(Parse.User._currentUser);
+      }
+
+      // Load the user from Storage
+      return Parse.Storage.getItemAsync(Parse._getParsePath(
+        Parse.User._CURRENT_USER_KEY)).then(function(userData) {
+        if (!userData) {
+          return null;
+        }
+        Parse.User._currentUser = Parse.Object._create("_User");
+        Parse.User._currentUser._isCurrentUser = true;
+
+        var json = JSON.parse(userData);
+        Parse.User._currentUser.id = json._id;
+        delete json._id;
+        Parse.User._currentUser._sessionToken = json._sessionToken;
+        delete json._sessionToken;
+        Parse.User._currentUser._finishFetch(json);
+
+        Parse.User._currentUser._synchronizeAllAuthData();
+        Parse.User._currentUser._refreshCache();
+        Parse.User._currentUser._opSetQueue = [{}];
+        return Parse.User._currentUser;
+      });
+    },
+
+    /**
      * Allow someone to define a custom User class without className
      * being rewritten to _User. The default behavior is to rewrite
      * User to _User for legacy reasons. This allows developers to
@@ -7664,10 +8011,33 @@
     },
 
     /**
+     * Allow a legacy application to start using revocable sessions. If the
+     * current session token is not revocable, a request will be made for a new,
+     * revocable session.
+     * It is not necessary to call this method from cloud code unless you are
+     * handling user signup or login from the server side. In a cloud code call,
+     * this function will not attempt to upgrade the current token.
+     * @param {Object} options A Backbone-style options object.
+     *
+     * @return {Parse.Promise} A promise that is resolved when the process has
+     *   completed. If a replacement session token is requested, the promise
+     *   will be resolved after a new token has been fetched.
+     */
+    enableRevocableSession: function(options) {
+      options = options || {};
+      Parse.User._isRevocableSessionEnabled = true;
+      if (!Parse._isNode && Parse.User.current()) {
+        return Parse.User.current()._upgradeToRevocableSession(options);
+      }
+      return Parse.Promise.as()._thenRunCallbacks(options);
+    },
+
+    /**
      * Persists a user as currentUser to localStorage, and into the singleton.
      */
     _saveCurrentUser: function(user) {
-      if (Parse.User._currentUser !== user) {
+      if (Parse.User._currentUser !== null &&
+          Parse.User._currentUser !== user) {
         Parse.User.logOut();
       }
       user._isCurrentUser = true;
@@ -7677,9 +8047,15 @@
       var json = user.toJSON();
       json._id = user.id;
       json._sessionToken = user._sessionToken;
-      Parse.localStorage.setItem(
+      if (Parse.Storage.async) {
+        Parse.Storage.setItemAsync(
           Parse._getParsePath(Parse.User._CURRENT_USER_KEY),
           JSON.stringify(json));
+      } else {
+        Parse.Storage.setItem(
+          Parse._getParsePath(Parse.User._CURRENT_USER_KEY),
+          JSON.stringify(json));
+      }
     },
 
     _registerAuthenticationProvider: function(provider) {
@@ -7698,6 +8074,99 @@
   });
 }(this));
 
+
+(function(root) {
+  root.Parse = root.Parse || {};
+  var Parse = root.Parse;
+
+  /**
+   * @class
+   *
+   * <p>A Parse.Session object is a local representation of a revocable session.
+   * This class is a subclass of a Parse.Object, and retains the same
+   * functionality of a Parse.Object.</p>
+   */
+  Parse.Session = Parse.Object.extend('_Session',
+  /** @lends Parse.Session.prototype */
+  {
+    /**
+     * Returns the session token string.
+     * @return {String}
+     */
+    getSessionToken: function() {
+      return this._sessionToken;
+    },
+
+    /**
+     * Internal method to handle special fields in a _Session response.
+     */
+    _mergeMagicFields: function(attrs) {
+      if (attrs.sessionToken) {
+        this._sessionToken = attrs.sessionToken;
+        delete attrs.sessionToken;
+      }
+      Parse.Session.__super__._mergeMagicFields.call(this, attrs);
+    },
+  }, /** @lends Parse.Session */ {
+
+    // Throw an error when modifying these read-only fields
+    readOnlyAttributes: {
+      createdWith: true,
+      expiresAt: true,
+      installationId: true,
+      restricted: true,
+      sessionToken: true,
+      user: true
+    },
+
+    /**
+     * Retrieves the Session object for the currently logged in session.
+     * @return {Parse.Promise} A promise that is resolved with the Parse.Session
+     *   object after it has been fetched.
+     */
+    current: function(options) {
+      options = options || {};
+
+      var session = Parse.Object._create('_Session');
+      var currentToken = Parse.User.current().getSessionToken();
+      return Parse._request({
+        route: 'sessions',
+        className: 'me',
+        method: 'GET',
+        useMasterKey: options.useMasterKey,
+        sessionToken: currentToken
+      }).then(function(resp, status, xhr) {
+        var serverAttrs = session.parse(resp, status, xhr);
+        session._finishFetch(serverAttrs);
+        return session;
+      })._thenRunCallbacks(options, session);
+    },
+
+    /**
+     * Determines whether a session token is revocable.
+     * @return {Boolean}
+     */
+    _isRevocable: function(token) {
+      return token.indexOf('r:') > -1;
+    },
+
+    /**
+     * Determines whether the current session token is revocable.
+     * This method is useful for migrating Express.js or Node.js web apps to
+     * use revocable sessions. If you are migrating an app that uses the Parse
+     * SDK in the browser only, please use Parse.User.enableRevocableSession()
+     * instead, so that sessions can be automatically upgraded.
+     * @return {Boolean}
+     */
+    isCurrentSessionRevocable: function() {
+      if (Parse.User.current() !== null) {
+        return Parse.Session._isRevocable(
+          Parse.User.current().getSessionToken()
+        );
+      }
+    }
+  });
+})(this);
 
 // Parse.Query is a way to create a list of Parse.Objects.
 (function(root) {
@@ -7983,7 +8452,12 @@
 
       return request.then(function(response) {
         return _.map(response.results, function(json) {
-          var obj = new self.objectClass();
+          var obj;
+          if (response.className) {
+            obj = new Parse.Object(response.className);
+          } else {
+            obj = new self.objectClass();
+          }
           obj._finishFetch(json, true);
           return obj;
         })[0];
@@ -8481,7 +8955,7 @@
 
     /**
      * Include nested Parse.Objects for the provided key.  You can use dot
-     * notation to specify which fields in the included object are also fetch.
+     * notation to specify which fields in the included object are also fetched.
      * @param {String} key The name of the key to include.
      * @return {Parse.Query} Returns the query, so you can chain this call.
      */
@@ -8549,6 +9023,9 @@
       query._limit = options.batchSize || 100;
       query._where = _.clone(this._where);
       query._include = _.clone(this._include);
+      if (this._select) {
+        query._select = _.clone(this._select);
+      }
 
       query.ascending('objectId');
 
@@ -8789,7 +9266,7 @@
    * History serves as a global router (per frame) to handle hashchange
    * events or pushState, match the appropriate route, and trigger
    * callbacks. You shouldn't ever have to create one of these yourself
-   * â€” you should use the reference to <code>Parse.history</code>
+   * — you should use the reference to <code>Parse.history</code>
    * that will be created for you automatically if you make use of
    * Routers with routes.
    * @class
